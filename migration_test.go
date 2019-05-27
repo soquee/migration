@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"code.soquee.net/migration"
-	"code.soquee.net/testlog"
 	"golang.org/x/tools/godoc/vfs"
 	"golang.org/x/tools/godoc/vfs/mapfs"
 )
@@ -37,12 +36,11 @@ var genTestCases = [...]struct {
 func TestLastRun(t *testing.T) {
 	for i, tc := range genTestCases {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			logger := testlog.New(t)
 			migrationDir := "001_" + tc.dir
 			fs := mapfs.New(map[string]string{
 				path.Join("/", migrationDir, "up.sql"): "-- up.sql",
 			})
-			ident, name, err := migration.LastRun(context.Background(), migrationsTable, fs, nil, logger)
+			ident, name, err := migration.LastRun(context.Background(), migrationsTable, fs, nil)
 			if ident != "" {
 				t.Errorf("Wrong ident: %q", ident)
 			}
@@ -70,14 +68,17 @@ func TestGenerate(t *testing.T) {
 				}
 			}()
 
-			debug := testlog.New(t)
-			err = migration.Generator(dir, debug)(tc.name)
+			err = migration.Generator(dir)(tc.name)
 			if err != tc.err {
 				t.Errorf("Unexpected error: want=%q, got=%q", tc.err, err)
 			}
 
 			walked := 0
-			err = migration.Walk(context.Background(), migrationsTable, nil, vfs.OS(dir), debug, func(name string, info os.FileInfo, status migration.RunStatus) error {
+			walker, err := migration.NewWalker(context.Background(), migrationsTable, nil)
+			if err != nil {
+				t.Fatalf("error creating walker: %q", err)
+			}
+			err = walker(vfs.OS(dir), func(name string, info os.FileInfo, status migration.RunStatus) error {
 				dirName := info.Name()
 				if dirName == path.Base(dir) {
 					t.Fatalf("Walk included top level directory but should only hit migrations")

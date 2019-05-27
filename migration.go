@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path"
 	"sort"
@@ -20,7 +19,7 @@ import (
 
 // Generator returns a function that creates migration files at the given base
 // path.
-func Generator(basePath string, debug *log.Logger) func(name string) error {
+func Generator(basePath string) func(name string) error {
 	replacer := strings.NewReplacer(
 		" ", "_",
 		"\t", "_",
@@ -39,14 +38,15 @@ func Generator(basePath string, debug *log.Logger) func(name string) error {
 			return err
 		}
 
-		upfile, err := os.Create(path.Join(relPath, "up.sql"))
+		var upfile *os.File
+		upfile, err = os.Create(path.Join(relPath, "up.sql"))
 		if err != nil {
 			return err
 		}
 		defer func() {
-			err := upfile.Close()
-			if err != nil && debug != nil {
-				debug.Printf("Error closing new up.sql: %q", err)
+			e := upfile.Close()
+			if e != nil && err == nil {
+				err = fmt.Errorf("error closing new up.sql: %q", err)
 			}
 		}()
 
@@ -55,14 +55,15 @@ func Generator(basePath string, debug *log.Logger) func(name string) error {
 			return err
 		}
 
-		downfile, err := os.Create(path.Join(relPath, "down.sql"))
+		var downfile *os.File
+		downfile, err = os.Create(path.Join(relPath, "down.sql"))
 		if err != nil {
 			return err
 		}
 		defer func() {
-			err := downfile.Close()
-			if err != nil && debug != nil {
-				debug.Printf("Error closing new down.sql: %q", err)
+			e := downfile.Close()
+			if e != nil && err == nil {
+				err = fmt.Errorf("error closing new down.sql: %q", err)
 			}
 		}()
 
@@ -101,7 +102,7 @@ func getRunMigrations(ctx context.Context, tx *sql.Tx, migrationsTable string) (
 
 // LastRun returns the last migration directory by lexical order that exists in
 // the database and on disk.
-func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx *sql.Tx, logger *log.Logger) (ident, name string, err error) {
+func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx *sql.Tx) (ident, name string, err error) {
 	var version string
 	if tx != nil {
 		err = tx.QueryRowContext(ctx,
@@ -113,7 +114,11 @@ func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx 
 	}
 
 	var fpath string
-	err = Walk(ctx, migrationsTable, tx, fs, logger, func(name string, info os.FileInfo, status RunStatus) error {
+	walker, err := NewWalker(ctx, migrationsTable, tx)
+	if err != nil {
+		return version, fpath, err
+	}
+	err = walker(fs, func(name string, info os.FileInfo, status RunStatus) error {
 		if tx != nil && name != version {
 			return nil
 		}
@@ -134,67 +139,79 @@ func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx 
 // visited by a Walker.
 type WalkFunc func(name string, info os.FileInfo, status RunStatus) error
 
-// Walk walks the migrations it finds on the filesystem in lexical order
-// (mostly, keep reading) and calls a function for each discovered migration,
-// passing in its name, status, and file information.
+// Walker is a function that can be used to walk a filesystem and calls WalkFunc
+// for each migration.
+type Walker func(fs vfs.FileSystem, f WalkFunc) error
+
+// NewWalker queries the database for migration status information and returns a
+// function that walks the migrations it finds on the filesystem in lexical
+// order (mostly, keep reading) and calls a function for each discovered
+// migration, passing in its name, status, and file information.
+//
 // If a migration exists in the database but not on the filesystem, info will be
 // nil and f will be called for it after the migrations that exist on the
 // filesystem.
 // No particular order is guaranteed for calls to f for migrations that do not
 // exist on the filesystem.
-func Walk(ctx context.Context, migrationsTable string, tx *sql.Tx, fs vfs.FileSystem, logger *log.Logger, f WalkFunc) error {
+//
+// If NewWalker returns an error and a non-nil function, the function may still
+// be used to walk the migrations on the filesystem but the status information
+// may be wrong since the DB may not have been queried successfully.
+func NewWalker(ctx context.Context, migrationsTable string, tx *sql.Tx) (Walker, error) {
 	var err error
 	var ran []string
 	if tx != nil {
 		ran, err = getRunMigrations(ctx, tx, migrationsTable)
 		if err != nil {
-			logger.Printf("Error querying existing migrations: %q", err)
+			err = fmt.Errorf("error querying existing migrations: %q", err)
 			tx = nil
 		}
 	}
 
-	files, err := fs.ReadDir("/")
-	if err != nil {
-		return err
-	}
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Name() < files[j].Name()
-	})
+	return func(fs vfs.FileSystem, f WalkFunc) error {
+		files, err := fs.ReadDir("/")
+		if err != nil {
+			return err
+		}
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].Name() < files[j].Name()
+		})
 
-	for _, info := range files {
-		if !info.IsDir() {
-			continue
-		}
-		name := info.Name()
-		idx := strings.Index(name, "_")
-		if idx == -1 {
-			continue
-		}
-		name = strings.Replace(name[:idx], "-", "", -1)
-		var status RunStatus
-		if tx != nil {
-			if n := contains(ran, name); n != -1 {
-				// The migration exists on the filesystem and in the database.
-				// Since we found it, remove it from the list of previously ran
-				// migrations.
-				ran = append(ran[:n], ran[n+1:]...)
-				status = StatusRun
-			} else {
-				// The migration only exists on the filesystem.
-				status = StatusNotRun
+		for _, info := range files {
+			if !info.IsDir() {
+				continue
+			}
+			name := info.Name()
+			idx := strings.Index(name, "_")
+			if idx == -1 {
+				continue
+			}
+			name = strings.Replace(name[:idx], "-", "", -1)
+			var status RunStatus
+			if tx != nil {
+				if n := contains(ran, name); n != -1 {
+					// The migration exists on the filesystem and in the database.
+					// Since we found it, remove it from the list of previously run
+					// migrations.
+					ran = append(ran[:n], ran[n+1:]...)
+					status = StatusRun
+				} else {
+					// The migration only exists on the filesystem.
+					status = StatusNotRun
+				}
+			}
+			err = f(name, info, status)
+			if err != nil {
+				return err
 			}
 		}
-		err = f(name, info, status)
-		if err != nil {
-			return err
-		}
-	}
 
-	for _, missing := range ran {
-		err = f(missing, nil, StatusRun)
-		if err != nil {
-			return err
+		for _, missing := range ran {
+			err = f(missing, nil, StatusRun)
+			if err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	}, err
 }
