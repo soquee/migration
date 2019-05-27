@@ -1,0 +1,17 @@
+image: freebsd/latest
+packages:
+  - go
+sources:
+  - https://git.sr.ht/~samwhited/migration
+tasks:
+  - info: |
+      go version
+      go env
+      cd migration/
+      go get golang.org/x/lint/golint
+  - test: |
+      cd migration/
+      go test -v ./...
+      go run golang.org/x/lint/golint -set_exit_status ./...
+      go vet ./...
+      gofmt -s -l . && [ -z "$(gofmt -s -l .)" ]
