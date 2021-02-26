@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"sort"
@@ -14,7 +15,6 @@ import (
 	"time"
 
 	"github.com/lib/pq"
-	"golang.org/x/tools/godoc/vfs"
 )
 
 // Generator returns a function that creates migration files at the given base
@@ -102,7 +102,7 @@ func getRunMigrations(ctx context.Context, tx *sql.Tx, migrationsTable string) (
 
 // LastRun returns the last migration directory by lexical order that exists in
 // the database and on disk.
-func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx *sql.Tx) (ident, name string, err error) {
+func LastRun(ctx context.Context, migrationsTable string, vfs fs.FS, tx *sql.Tx) (ident, name string, err error) {
 	var version string
 	if tx != nil {
 		err = tx.QueryRowContext(ctx,
@@ -118,7 +118,7 @@ func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx 
 	if err != nil {
 		return version, fpath, err
 	}
-	err = walker(fs, func(name string, info os.FileInfo, status RunStatus) error {
+	err = walker(vfs, func(name string, info fs.DirEntry, status RunStatus) error {
 		if tx != nil && name != version {
 			return nil
 		}
@@ -137,11 +137,11 @@ func LastRun(ctx context.Context, migrationsTable string, fs vfs.FileSystem, tx 
 
 // WalkFunc is the type of the function called for each file or directory
 // visited by a Walker.
-type WalkFunc func(name string, info os.FileInfo, status RunStatus) error
+type WalkFunc func(name string, info fs.DirEntry, status RunStatus) error
 
 // Walker is a function that can be used to walk a filesystem and calls WalkFunc
 // for each migration.
-type Walker func(fs vfs.FileSystem, f WalkFunc) error
+type Walker func(vfs fs.FS, f WalkFunc) error
 
 // NewWalker queries the database for migration status information and returns a
 // function that walks the migrations it finds on the filesystem in lexical
@@ -168,8 +168,8 @@ func NewWalker(ctx context.Context, migrationsTable string, tx *sql.Tx) (Walker,
 		}
 	}
 
-	return func(fs vfs.FileSystem, f WalkFunc) error {
-		files, err := fs.ReadDir("/")
+	return func(vfs fs.FS, f WalkFunc) error {
+		files, err := fs.ReadDir(vfs, ".")
 		if err != nil {
 			return err
 		}

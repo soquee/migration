@@ -2,17 +2,26 @@ package migration_test
 
 import (
 	"context"
-	"io/ioutil"
+	"io/fs"
 	"os"
 	"path"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"code.soquee.net/migration"
-	"golang.org/x/tools/godoc/vfs"
-	"golang.org/x/tools/godoc/vfs/mapfs"
 )
+
+func newMapFS(m map[string]string) fstest.MapFS {
+	mfs := make(fstest.MapFS)
+	for k, v := range m {
+		mfs[k] = &fstest.MapFile{
+			Data: []byte(v),
+		}
+	}
+	return mfs
+}
 
 const migrationsTable = "__migrations"
 
@@ -37,8 +46,8 @@ func TestLastRun(t *testing.T) {
 	for i, tc := range genTestCases {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			migrationDir := "001_" + tc.dir
-			fs := mapfs.New(map[string]string{
-				path.Join("/", migrationDir, "up.sql"): "-- up.sql",
+			fs := newMapFS(map[string]string{
+				path.Join(migrationDir, "up.sql"): "-- up.sql",
 			})
 			ident, name, err := migration.LastRun(context.Background(), migrationsTable, fs, nil)
 			if ident != "" {
@@ -57,7 +66,7 @@ func TestLastRun(t *testing.T) {
 func TestGenerate(t *testing.T) {
 	for i, tc := range genTestCases {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			dir, err := ioutil.TempDir("", "migration_test")
+			dir, err := os.MkdirTemp("", "migration_test")
 			if err != nil {
 				t.Fatalf("Error creating temp directory for tests: %q", err)
 			}
@@ -78,7 +87,7 @@ func TestGenerate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("error creating walker: %q", err)
 			}
-			err = walker(vfs.OS(dir), func(name string, info os.FileInfo, status migration.RunStatus) error {
+			err = walker(os.DirFS(dir), func(name string, info fs.DirEntry, status migration.RunStatus) error {
 				dirName := info.Name()
 				if dirName == path.Base(dir) {
 					t.Fatalf("Walk included top level directory but should only hit migrations")
