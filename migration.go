@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -169,22 +168,21 @@ func NewWalker(ctx context.Context, migrationsTable string, tx *sql.Tx) (Walker,
 	}
 
 	return func(vfs fs.FS, f WalkFunc) error {
-		files, err := fs.ReadDir(vfs, ".")
-		if err != nil {
-			return err
-		}
-		sort.Slice(files, func(i, j int) bool {
-			return files[i].Name() < files[j].Name()
-		})
-
-		for _, info := range files {
-			if !info.IsDir() {
-				continue
+		err := fs.WalkDir(vfs, ".", func(p string, info fs.DirEntry, err error) error {
+			if p == "." {
+				return nil
 			}
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				return nil
+			}
+
 			name := info.Name()
 			idx := strings.Index(name, "_")
 			if idx == -1 {
-				continue
+				return nil
 			}
 			name = strings.Replace(name[:idx], "-", "", -1)
 			var status RunStatus
@@ -200,10 +198,10 @@ func NewWalker(ctx context.Context, migrationsTable string, tx *sql.Tx) (Walker,
 					status = StatusNotRun
 				}
 			}
-			err = f(name, info, status)
-			if err != nil {
-				return err
-			}
+			return f(name, info, status)
+		})
+		if err != nil {
+			return err
 		}
 
 		for _, missing := range ran {
