@@ -1,8 +1,5 @@
 # migration
 
-[![GoDoc](https://code.soquee.net/status.svg)](https://godoc.org/code.soquee.net/migration)
-[![Issue Tracker](https://code.soquee.net/todo.svg)](https://todo.sr.ht/~samwhited/soquee)
-
 The **migration** package provides a way to generate, list, and apply PostgreSQL
 database migrations.
 The package can be imported like so:
