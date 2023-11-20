@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
 )
 
 // Generator returns a function that creates migration files at the given base
@@ -93,9 +93,23 @@ func contains(sl []string, s string) int {
 
 func getRunMigrations(ctx context.Context, tx *sql.Tx, migrationsTable string) ([]string, error) {
 	var ran []string
-	err := tx.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT array_agg(version ORDER BY version ASC) FROM %s`, pq.QuoteIdentifier(migrationsTable)),
-	).Scan(pq.Array(&ran))
+	tableIdent := pgx.Identifier{migrationsTable}
+	rows, err := tx.QueryContext(ctx,
+		fmt.Sprintf(`SELECT version FROM %s ORDER BY version ASC`, tableIdent.Sanitize()),
+	)
+	if err != nil {
+		return nil, err
+	}
+	/* #nosec */
+	defer rows.Close()
+	for rows.Next() {
+		var r string
+		err = rows.Scan(&r)
+		if err != nil {
+			return nil, err
+		}
+		ran = append(ran, r)
+	}
 	return ran, err
 }
 
@@ -104,8 +118,9 @@ func getRunMigrations(ctx context.Context, tx *sql.Tx, migrationsTable string) (
 func LastRun(ctx context.Context, migrationsTable string, vfs fs.FS, tx *sql.Tx) (ident, name string, err error) {
 	var version string
 	if tx != nil {
+		tableIdent := pgx.Identifier{migrationsTable}
 		err = tx.QueryRowContext(ctx,
-			fmt.Sprintf(`SELECT version FROM %s ORDER BY version DESC LIMIT 1`, pq.QuoteIdentifier(migrationsTable)),
+			fmt.Sprintf(`SELECT version FROM %s ORDER BY version DESC LIMIT 1`, tableIdent.Sanitize()),
 		).Scan(&version)
 		if err != nil {
 			return version, "", err
