@@ -10,18 +10,6 @@ import (
 )
 ```
 
-Two build tags are available to pick between PostgreSQL and Sqlite3:
-
-- `pgx5` (default)
-- `sqlite`
-
-When building with the `pgx5` build tag (or no build tags at all) the
-[`github.com/jackc/pgx/v5`][pgx5] is imported and used to sanitize inputs.
-When building with the `sqlite` build tag no specific sqlite driver is implied
-or imported and a generic sanitization method is used.
-
-[pgx5]: https://pkg.go.dev/github.com/jackc/pgx/v5
-
 
 ## License
 
